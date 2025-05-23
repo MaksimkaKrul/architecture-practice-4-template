@@ -1,21 +1,34 @@
+# Build stage
 FROM golang:1.24 AS build
 
 WORKDIR /go/src/practice-4
 COPY . .
 
+# Run unit tests
 RUN go test ./...
-ENV CGO_ENABLED=0
+
+# Build binaries
 RUN go install ./cmd/...
 
-FROM alpine:latest
+# Final images
+FROM alpine:latest AS server
 WORKDIR /opt/practice-4
-COPY --from=build /go/bin/client .
-COPY --from=build /go/bin/lb .
 COPY --from=build /go/bin/server .
-COPY --from=build /go/bin/stats .
 COPY entry.sh .
+CMD ["./entry.sh", "server"]
 
-RUN chmod +x /opt/practice-4/entry.sh && \
-    ls -la /opt/practice-4/
+FROM alpine:latest AS lb
+WORKDIR /opt/practice-4
+COPY --from=build /go/bin/lb .
+COPY entry.sh .
+CMD ["./entry.sh", "lb"]
 
-ENTRYPOINT ["/opt/practice-4/entry.sh"]
+FROM alpine:latest AS stats
+WORKDIR /opt/practice-4
+COPY --from=build /go/bin/stats .
+CMD ["./stats"]
+
+FROM golang:1.24 AS test
+WORKDIR /go/src/practice-4
+COPY . .
+CMD ["go", "test", "-v", "./integration"]
