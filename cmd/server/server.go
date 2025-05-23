@@ -42,6 +42,7 @@ func main() {
 		report.Process(r)
 
 		rw.Header().Set("content-type", "application/json")
+		rw.Header().Set("lb-from", os.Getenv("SERVER_NAME")) // ДОДАНО
 		rw.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(rw).Encode([]string{
 			"1", "2",

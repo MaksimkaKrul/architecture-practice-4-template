@@ -34,9 +34,9 @@ var (
 	healthyMutex   sync.RWMutex
 )
 
-var hashFunc = func(path string) uint32 {
+var hashFunc = func(r *http.Request) uint32 {
 	h := fnv.New32a()
-	h.Write([]byte(path))
+	h.Write([]byte(r.URL.RequestURI()))
 	return h.Sum32()
 }
 
@@ -80,6 +80,7 @@ func forward(dst string, rw http.ResponseWriter, r *http.Request) error {
 			rw.Header().Set("lb-from", dst)
 		}
 		log.Println("fwd", resp.StatusCode, resp.Request.URL)
+		log.Printf("lb-from (from server): %s", resp.Header.Get("lb-from")) // ДОДАНО
 		rw.WriteHeader(resp.StatusCode)
 		defer resp.Body.Close()
 		_, err := io.Copy(rw, resp.Body)
@@ -94,8 +95,8 @@ func forward(dst string, rw http.ResponseWriter, r *http.Request) error {
 	}
 }
 
-func selectServer(path string) (string, error) {
-	hash := hashFunc(path)
+func selectServer(r *http.Request) (string, error) {
+	hash := hashFunc(r)
 	index := int(hash % uint32(len(serversPool)))
 
 	healthyMutex.RLock()
@@ -129,7 +130,7 @@ func main() {
 	}
 
 	frontend := httptools.CreateServer(*port, http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		server, err := selectServer(r.URL.Path)
+		server, err := selectServer(r)
 		if err != nil {
 			log.Printf("No healthy servers: %v", err)
 			rw.WriteHeader(http.StatusServiceUnavailable)

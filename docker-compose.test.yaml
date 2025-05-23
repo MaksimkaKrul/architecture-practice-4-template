@@ -1,16 +1,68 @@
+version: "3.8"
+
 services:
-  test:
+  balancer:
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
     build:
       context: .
-      dockerfile: Dockerfile.test
-    networks:
-      - servers
+      dockerfile: Dockerfile
+    command: ["lb"]
+    ports:
+      - "8090:8090"
+    environment:
+      - INTEGRATION_TEST=true
     depends_on:
       - server1
       - server2
       - server3
-      - balancer
+    networks:
+      - testnet
 
-  balancer:
-    # Для тестів включаємо режим відлагодження, коли балансувальник додає інформацію, кому було відправлено запит.
-    command: ["lb", "--trace=true"]
+  server1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["server"]
+    environment:
+      - SERVER_NAME=server1
+    networks:
+      - testnet
+
+  server2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["server"]
+    environment:
+      - SERVER_NAME=server2
+    networks:
+      - testnet
+
+  server3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["server"]
+    environment:
+      - SERVER_NAME=server3
+    networks:
+      - testnet
+
+  integration-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    environment:
+      - INTEGRATION_TEST=1
+    depends_on:
+      - balancer
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge

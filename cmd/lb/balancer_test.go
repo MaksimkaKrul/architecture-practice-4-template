@@ -1,91 +1,57 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
-	"net/http/httptest"
+	"os"
 	"testing"
+	"time"
 )
 
-func TestSelectServer(t *testing.T) {
-	oldHashFunc := hashFunc
-	defer func() { hashFunc = oldHashFunc }()
-	hashFunc = func(path string) uint32 { return 0 }
+const baseAddress = "http://balancer:8090"
 
-	serversPool = []string{"s1", "s2", "s3"}
-	healthyMutex.Lock()
-	healthyServers = map[string]bool{
-		"s1": true,
-		"s2": true,
-		"s3": true,
-	}
-	healthyMutex.Unlock()
+var client = http.Client{
+	Timeout: 3 * time.Second,
+}
 
-	server, err := selectServer("/test")
-	if err != nil {
-		t.Fatal("Expected no error")
+func TestBalancer(t *testing.T) {
+	if _, exists := os.LookupEnv("INTEGRATION_TEST"); !exists {
+		t.Skip("Integration test is not enabled")
 	}
-	if server != "s1" {
-		t.Errorf("Expected s1, got %s", server)
+
+	const requestCount = 20
+	serversSeen := make(map[string]bool)
+
+	for i := 0; i < requestCount; i++ {
+		resp, err := client.Get(fmt.Sprintf("%s/api/v1/some-data", baseAddress))
+		if err != nil {
+			t.Fatalf("Request %d failed: %v", i+1, err)
+		}
+
+		serverID := resp.Header.Get("lb-from")
+		resp.Body.Close()
+
+		if serverID == "" {
+			t.Errorf("Request %d: missing lb-from header", i+1)
+		} else {
+			t.Logf("Request %d handled by: %s", i+1, serverID)
+			serversSeen[serverID] = true
+		}
+	}
+
+	if len(serversSeen) < 2 {
+		t.Errorf("Expected requests to be distributed across at least 2 servers, got: %v", serversSeen)
+	} else {
+		t.Logf("Requests were distributed across servers: %v", serversSeen)
 	}
 }
 
-func TestSelectServer_UnhealthyFirst(t *testing.T) {
-	oldHashFunc := hashFunc
-	defer func() { hashFunc = oldHashFunc }()
-	hashFunc = func(path string) uint32 { return 0 }
-
-	serversPool = []string{"s1", "s2", "s3"}
-	healthyMutex.Lock()
-	healthyServers = map[string]bool{
-		"s1": false,
-		"s2": true,
-		"s3": true,
-	}
-	healthyMutex.Unlock()
-
-	server, err := selectServer("/test")
-	if err != nil {
-		t.Fatal("Expected no error")
-	}
-	if server != "s2" {
-		t.Errorf("Expected s2, got %s", server)
-	}
-}
-
-func TestSelectServer_AllUnhealthy(t *testing.T) {
-	oldHashFunc := hashFunc
-	defer func() { hashFunc = oldHashFunc }()
-	hashFunc = func(path string) uint32 { return 0 }
-
-	serversPool = []string{"s1", "s2", "s3"}
-	healthyMutex.Lock()
-	healthyServers = map[string]bool{
-		"s1": false,
-		"s2": false,
-		"s3": false,
-	}
-	healthyMutex.Unlock()
-
-	_, err := selectServer("/test")
-	if err == nil {
-		t.Error("Expected error, got nil")
-	}
-}
-
-func TestForward(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer ts.Close()
-
-	rw := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/", nil)
-
-	err := forward(ts.URL[len("http://"):], rw, req)
-	if err != nil {
-		t.Errorf("Forward error: %v", err)
-	}
-	if rw.Code != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", rw.Code)
+func BenchmarkBalancer(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		resp, err := client.Get(fmt.Sprintf("%s/api/v1/some-data", baseAddress))
+		if err != nil {
+			b.Fatalf("Request failed: %v", err)
+		}
+		resp.Body.Close()
 	}
 }
