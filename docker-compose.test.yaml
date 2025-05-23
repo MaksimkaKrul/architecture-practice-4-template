@@ -53,15 +53,18 @@ services:
       - testnet
 
   integration-test:
-    build:
-      context: .
-      dockerfile: Dockerfile.test
-    environment:
-      - INTEGRATION_TEST=1
+    image: golang:1.24
+    volumes:
+      - .:/go/src/practice-4
+    working_dir: /go/src/practice-4
+    command: ["go", "test", "./integration"]
     depends_on:
       - balancer
+    environment:
+      - INTEGRATION_TEST=1
     networks:
       - testnet
+
 
 networks:
   testnet:
