@@ -7,18 +7,35 @@ on:
 
 jobs:
   build-and-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04 # Используем более стабильную LTS версию
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Cleanup existing Docker
+      run: |
+        sudo apt-get remove -y docker docker-engine docker.io containerd runc || true
+        sudo apt-get purge -y docker-ce docker-ce-cli containerd.io || true
+        sudo rm -rf /var/lib/docker
+        sudo rm -rf /var/lib/containerd
+
     - name: Install Docker
       run: |
         sudo apt-get update
-        sudo apt-get install -y docker.io
-        sudo systemctl start docker
-        docker --version
+        sudo apt-get install -y \
+            ca-certificates \
+            curl \
+            gnupg
+        sudo install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        echo \
+          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+          $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+          sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+        sudo apt-get update
+        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin
+        sudo docker --version
 
     - name: Install Docker Compose
       run: |
