@@ -1,10 +1,7 @@
-networks:
-  servers:
-
 services:
   balancer:
     build: .
-    command: "lb"
+    command: "lb" 
     networks:
       - servers
     ports:
@@ -12,6 +9,7 @@ services:
 
   server1:
     build: .
+    command: "server"  
     networks:
       - servers
     ports:
@@ -19,6 +17,7 @@ services:
 
   server2:
     build: .
+    command: "server"
     networks:
       - servers
     ports:
@@ -26,6 +25,7 @@ services:
 
   server3:
     build: .
+    command: "server"
     networks:
       - servers
     ports:
