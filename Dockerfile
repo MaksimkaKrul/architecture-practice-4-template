@@ -1,16 +1,14 @@
-# Build stage
 FROM golang:1.24 AS build
 
 WORKDIR /go/src/practice-4
 COPY . .
 
-# Run unit tests
 RUN go test ./...
 
-# Build binaries
-RUN go install ./cmd/...
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go install ./cmd/...
 
-# Final images
+RUN ls -l /go/bin
+
 FROM alpine:latest AS server
 WORKDIR /opt/practice-4
 COPY --from=build /go/bin/server .
