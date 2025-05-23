@@ -1,7 +1,13 @@
+version: '3.8'  # Укажите версию compose
+
+networks:  # Явно объявляем сеть
+  servers:
+    driver: bridge
+
 services:
   balancer:
     build: .
-    command: "lb" 
+    command: "lb"
     networks:
       - servers
     ports:
@@ -9,7 +15,7 @@ services:
 
   server1:
     build: .
-    command: "server"  
+    command: "server"
     networks:
       - servers
     ports:
