@@ -19,8 +19,8 @@ jobs:
 
     - name: Run integration tests with docker-compose
       run: |
-        docker-compose -f docker-compose.test.yaml up --build --abort-on-container-exit --exit-code-from integration-test
+        docker compose -f docker-compose.test.yaml up --build --abort-on-container-exit --exit-code-from integration-test
 
     - name: Cleanup
       if: always()
-      run: docker-compose -f docker-compose.test.yaml down
+      run: docker compose -f docker-compose.test.yaml down
