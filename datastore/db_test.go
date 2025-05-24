@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time" // Добавлен импорт time для таймаута в тесте
 )
 
 // TestDb encapsulates all major tests for the Db
@@ -195,8 +196,24 @@ func TestDb(t *testing.T) {
 
 		t.Logf("Before compaction: %d segments, total size %d bytes", initialSegments, initialSize)
 
-		if err := db.Compact(); err != nil {
-			t.Fatalf("Compact failed: %v", err)
+		// Trigger background compaction
+		db.Compact()
+
+		// Wait for the compaction to complete.
+		// Using db.compactionWg.Wait() is safe here because it's a sync.WaitGroup,
+		// and Compact() adds to it, and the goroutine calls Done() when finished.
+		// Add a timeout to prevent test from hanging indefinitely in case of deadlock or bug.
+		done := make(chan struct{})
+		go func() {
+			db.compactionWg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// Compaction finished
+		case <-time.After(30 * time.Second): // 30 seconds timeout
+			t.Fatal("Compaction timed out")
 		}
 
 		// After compaction, based on current implementation, all old segments are merged into one new segment 1,
