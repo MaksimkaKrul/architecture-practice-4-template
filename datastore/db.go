@@ -40,10 +40,9 @@ type Db struct {
 	index          map[string]SegmentPos
 	maxSegmentSize int64
 
-	// New fields for compaction management
-	compactionWg sync.WaitGroup // To wait for active compactions on close
-	compactionMu sync.Mutex     // To ensure only one compaction runs at a time
-	isCompacting bool           // Flag to prevent multiple compactions
+	compactionWg sync.WaitGroup
+	compactionMu sync.Mutex
+	isCompacting bool
 }
 
 func Open(dir string, maxSegmentSize int64) (*Db, error) {
@@ -59,7 +58,6 @@ func Open(dir string, maxSegmentSize int64) (*Db, error) {
 	var segmentFiles []string
 	for _, f := range files {
 		name := f.Name()
-		// Пропускаем временные файлы с суффиксом merge
 		if strings.HasPrefix(name, segmentPrefix) && !strings.HasSuffix(name, mergeSuffix) {
 			segmentFiles = append(segmentFiles, name)
 		}
@@ -79,8 +77,7 @@ func Open(dir string, maxSegmentSize int64) (*Db, error) {
 	for _, segFile := range segmentFiles {
 		seg, err := openSegment(dir, segFile)
 		if err != nil {
-			// В случае ошибки при открытии сегмента, попробуем закрыть уже открытые
-			db.Close() // Закрываем все, что успели открыть
+			db.Close()
 			return nil, err
 		}
 		db.segments = append(db.segments, seg)
@@ -94,10 +91,9 @@ func Open(dir string, maxSegmentSize int64) (*Db, error) {
 		db.segments = append(db.segments, seg)
 	}
 
-	// Восстановление индекса для всех сегментов
 	for _, seg := range db.segments {
 		if err := db.recoverSegment(seg); err != nil {
-			db.Close() // Закрываем все при ошибке восстановления
+			db.Close()
 			return nil, err
 		}
 	}
@@ -111,7 +107,7 @@ func extractNum(filename string) int {
 		return 0
 	}
 	numStr := strings.TrimLeft(parts[1], "0")
-	if numStr == "" { // Handle cases like "segment-0000" or just "segment-"
+	if numStr == "" {
 		return 0
 	}
 	num, _ := strconv.Atoi(numStr)
@@ -126,7 +122,7 @@ func createNewSegment(dir string, num int) (*Segment, error) {
 	}
 	stat, err := f.Stat()
 	if err != nil {
-		f.Close() // Закрыть файл при ошибке stat
+		f.Close()
 		return nil, err
 	}
 	return &Segment{
@@ -144,7 +140,7 @@ func openSegment(dir, name string) (*Segment, error) {
 	}
 	stat, err := f.Stat()
 	if err != nil {
-		f.Close() // Закрыть файл при ошибке stat
+		f.Close()
 		return nil, err
 	}
 	return &Segment{
@@ -155,8 +151,6 @@ func openSegment(dir, name string) (*Segment, error) {
 }
 
 func (db *Db) recoverSegment(seg *Segment) error {
-	// Для восстановления мы открываем файл для чтения, чтобы не мешать основному файлу,
-	// который может быть открыт для записи.
 	file, err := os.Open(seg.file.Name())
 	if err != nil {
 		return err
@@ -256,8 +250,6 @@ func (db *Db) findSegment(num int) *Segment {
 	return nil
 }
 
-// Compact запускает операцию компактирования в фоновой горутине.
-// Если компакция уже идет, новая не запускается.
 func (db *Db) Compact() {
 	db.compactionMu.Lock()
 	if db.isCompacting {
@@ -271,7 +263,7 @@ func (db *Db) Compact() {
 	db.compactionWg.Add(1)
 	go func() {
 		defer db.compactionWg.Done()
-		defer func() { // Reset flag when done
+		defer func() {
 			db.compactionMu.Lock()
 			db.isCompacting = false
 			db.compactionMu.Unlock()
@@ -286,25 +278,15 @@ func (db *Db) Compact() {
 	}()
 }
 
-// performCompaction содержит основную логику компактирования.
-// Эта функция выполняется под глобальной блокировкой db.mu, что означает,
-// что операции Put/Get будут заблокированы на время ее выполнения.
-// Для полностью неблокирующей компакции потребовалось бы более сложное управление
-// состоянием (например, Copy-on-Write).
 func (db *Db) performCompaction() error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
-	// Нет смысла компактировать, если меньше 2 сегментов (т.е. 0 или 1)
 	if len(db.segments) < 2 {
 		return nil
 	}
 
-	// 1. Создаем временный файл для объединенных данных
-	// Номер для merge файла будет на 1 больше номера последнего сегмента
-	// (или номер самого последнего сегмента, если он активный)
-	// Для компакции, мы всегда начинаем с 1-го сегмента, поэтому имя будет уникальным.
-	mergeNum := db.segments[len(db.segments)-1].num + 1 // Номер для временного файла
+	mergeNum := db.segments[len(db.segments)-1].num + 1
 	mergeName := fmt.Sprintf("%s%04d%s", segmentPrefix, mergeNum, mergeSuffix)
 	mergePath := filepath.Join(db.dir, mergeName)
 
@@ -313,40 +295,31 @@ func (db *Db) performCompaction() error {
 		return err
 	}
 
-	// 2. Собираем актуальные записи из всех сегментов, кроме текущего активного
-	// (который не участвует в компактировании)
 	mergedKeys := make(map[string]entry)
-	// Итерируем по копии segments, чтобы избежать проблем, если db.segments изменяется
-	// во время итерации (хотя в текущем performCompaction этого не происходит)
 	segmentsToCompact := make([]*Segment, len(db.segments)-1)
 	copy(segmentsToCompact, db.segments[:len(db.segments)-1])
 
 	for _, seg := range segmentsToCompact {
 		if err := processSegmentForCompaction(seg, mergedKeys, db.index); err != nil {
-			mergeFile.Close()    // Закрыть mergeFile при ошибке
-			os.Remove(mergePath) // Удалить неполный merge-файл
+			mergeFile.Close()
+			os.Remove(mergePath)
 			return err
 		}
 	}
 
-	// 3. Записываем объединенные данные во временный файл
 	if err := writeMergedData(mergeFile, mergedKeys); err != nil {
 		mergeFile.Close()
 		os.Remove(mergePath)
 		return err
 	}
 
-	// 4. Закрываем merge-файл. Это критично для os.Rename на Windows.
 	if err := mergeFile.Close(); err != nil {
-		os.Remove(mergePath) // Попытаться удалить, если закрытие не удалось
+		os.Remove(mergePath)
 		return fmt.Errorf("failed to close merge file %s: %w", mergePath, err)
 	}
 
-	// 5. Закрываем и удаляем старые файлы сегментов
-	// Перед удалением файла, его дескриптор должен быть закрыт.
 	for _, seg := range segmentsToCompact {
 		if err := seg.file.Close(); err != nil {
-			// Логируем ошибку, но продолжаем, так как другие файлы могут быть удалены
 			fmt.Fprintf(os.Stderr, "Error closing old segment file %s: %v\n", seg.file.Name(), err)
 		}
 		if err := os.Remove(seg.file.Name()); err != nil {
@@ -354,31 +327,22 @@ func (db *Db) performCompaction() error {
 		}
 	}
 
-	// 6. Переименовываем объединенный файл в "segment-0001"
-	// Это станет новым "первым" сегментом
 	newSegmentOnePath := filepath.Join(db.dir, fmt.Sprintf("%s%04d", segmentPrefix, 1))
 	if err := os.Rename(mergePath, newSegmentOnePath); err != nil {
-		// Если переименование не удалось, возможно, надо откатиться
 		fmt.Fprintf(os.Stderr, "Error renaming %s to %s: %v\n", mergePath, newSegmentOnePath, err)
 		return err
 	}
 
-	// 7. Перестроение структуры Db: очищаем сегменты и индекс, затем переоткрываем их
-	// и восстанавливаем индекс из файлов на диске.
-	// Закрываем активный сегмент, так как он будет переоткрыт в рамках общей логики.
-	activeSeg := db.getActiveSegment() // Получаем ссылку на активный сегмент до очистки
+	activeSeg := db.getActiveSegment()
 	if activeSeg != nil {
 		if err := activeSeg.file.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "Error closing active segment file %s during compaction setup: %v\n", activeSeg.file.Name(), err)
 		}
-		// Если активный сегмент не был частью компактируемых (т.е., не seg-0001),
-		// его нужно переименовать, чтобы он шел после нового сегмента 0001.
-		// Его новый номер будет 2.
 		oldActiveSegPath := activeSeg.file.Name()
-		newActiveSegNum := 2 // После компакции seg-0001 будет новым объединенным, старый активный станет seg-0002
+		newActiveSegNum := 2
 		newActiveSegPath := filepath.Join(db.dir, fmt.Sprintf("%s%04d", segmentPrefix, newActiveSegNum))
 
-		if oldActiveSegPath != newActiveSegPath { // Избегаем переименования на то же имя
+		if oldActiveSegPath != newActiveSegPath {
 			if err := os.Rename(oldActiveSegPath, newActiveSegPath); err != nil {
 				fmt.Fprintf(os.Stderr, "Error renaming active segment %s to %s: %v\n", oldActiveSegPath, newActiveSegPath, err)
 				return err
@@ -386,12 +350,9 @@ func (db *Db) performCompaction() error {
 		}
 	}
 
-	// Полностью очищаем текущие сегменты и индекс
 	db.segments = make([]*Segment, 0)
 	db.index = make(map[string]SegmentPos)
 
-	// Сканируем директорию заново, чтобы найти все актуальные сегменты (новый seg-0001
-	// и бывший активный сегмент, который теперь seg-0002)
 	files, err := os.ReadDir(db.dir)
 	if err != nil {
 		return err
@@ -420,8 +381,6 @@ func (db *Db) performCompaction() error {
 		}
 	}
 
-	// Если после компактирования не осталось ни одного сегмента (что маловероятно, но возможно),
-	// создаем новый начальный сегмент.
 	if len(db.segments) == 0 {
 		seg, err := createNewSegment(db.dir, 1)
 		if err != nil {
@@ -434,11 +393,11 @@ func (db *Db) performCompaction() error {
 }
 
 func processSegmentForCompaction(seg *Segment, mergedKeys map[string]entry, index map[string]SegmentPos) error {
-	file, err := os.Open(seg.file.Name()) // Открываем для чтения
+	file, err := os.Open(seg.file.Name())
 	if err != nil {
 		return err
 	}
-	defer file.Close() // Закрываем после чтения
+	defer file.Close()
 
 	reader := bufio.NewReader(file)
 	for {
@@ -458,7 +417,7 @@ func processSegmentForCompaction(seg *Segment, mergedKeys map[string]entry, inde
 
 func writeMergedData(file *os.File, data map[string]entry) error {
 	writer := bufio.NewWriter(file)
-	defer writer.Flush() // Важно: Flush() перед закрытием файла
+	defer writer.Flush()
 
 	for _, record := range data {
 		if _, err := writer.Write(record.Encode()); err != nil {
@@ -469,9 +428,6 @@ func writeMergedData(file *os.File, data map[string]entry) error {
 }
 
 func (db *Db) Close() error {
-	// Ждем завершения любых активных фоновых компакций
-	// Это должно быть ДО блокировки db.mu, чтобы горутина компакции могла
-	// завершить свою работу и вызвать Done()
 	db.compactionWg.Wait()
 
 	db.mu.Lock()
@@ -479,7 +435,7 @@ func (db *Db) Close() error {
 
 	var errs []error
 	for _, seg := range db.segments {
-		if seg.file != nil { // Проверяем, что файл открыт
+		if seg.file != nil {
 			if err := seg.file.Close(); err != nil {
 				errs = append(errs, fmt.Errorf("failed to close segment file %s: %w", seg.file.Name(), err))
 			}
