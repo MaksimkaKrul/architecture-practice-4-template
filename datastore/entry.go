@@ -29,8 +29,11 @@ func (e *entry) Encode() []byte {
 }
 
 func (e *entry) Decode(input []byte) {
-	e.key = decodeString(input[4:])
-	e.value = decodeString(input[len(e.key)+8:])
+	key := decodeString(input[4:])
+	keyLen := len(key)
+	val := decodeString(input[4+4+keyLen:])
+	e.key = key
+	e.value = val
 }
 
 func decodeString(v []byte) string {
