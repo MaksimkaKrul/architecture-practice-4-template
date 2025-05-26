@@ -1,7 +1,25 @@
 services:
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: db
+    networks:
+      - testnet
+    ports:
+      - "8091:8080"
+    volumes:
+      - ./data/db-test:/data/db
+    healthcheck:
+      test: ["CMD", "wget", "-q", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
   balancer:
     build:
       context: .
+      dockerfile: Dockerfile
       target: lb
     ports:
       - "8090:8090"
@@ -20,9 +38,14 @@ services:
   server1:
     build:
       context: .
+      dockerfile: Dockerfile
       target: server
     environment:
       - SERVER_NAME=server1
+      - DB_SERVICE_URL=http://db:8080
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "http://localhost:8080/health"]
       interval: 5s
@@ -34,9 +57,14 @@ services:
   server2:
     build:
       context: .
+      dockerfile: Dockerfile
       target: server
     environment:
       - SERVER_NAME=server2
+      - DB_SERVICE_URL=http://db:8080
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "http://localhost:8080/health"]
       interval: 5s
@@ -48,9 +76,14 @@ services:
   server3:
     build:
       context: .
+      dockerfile: Dockerfile
       target: server
     environment:
       - SERVER_NAME=server3
+      - DB_SERVICE_URL=http://db:8080
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "http://localhost:8080/health"]
       interval: 5s
@@ -62,11 +95,13 @@ services:
   integration-test:
     build:
       context: .
-      target: test
+      dockerfile: Dockerfile.test
     depends_on:
       - balancer
+      - db
     environment:
       - INTEGRATION_TEST=1
+      - TEAM_NAME=team-go
     networks:
       - testnet
 

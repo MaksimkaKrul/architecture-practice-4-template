@@ -1,38 +1,113 @@
-version: '3.8'  # Укажите версию compose
+version: '3.8'
 
-networks:  # Явно объявляем сеть
+networks:
   servers:
     driver: bridge
 
 services:
+  db:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: db
+    networks:
+      - servers
+    ports:
+      - "8091:8080"
+    volumes:
+      - ./data/db:/data/db
+    healthcheck:
+      test: ["CMD", "wget", "-q", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
   balancer:
-    build: .
-    command: "lb"
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: lb
     networks:
       - servers
     ports:
       - "8090:8090"
+    depends_on:
+      server1:
+        condition: service_healthy
+      server2:
+        condition: service_healthy
+      server3:
+        condition: service_healthy
 
   server1:
-    build: .
-    command: "server"
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
     networks:
       - servers
     ports:
       - "8080:8080"
+    environment:
+      - SERVER_NAME=server1
+      - DB_SERVICE_URL=http://db:8080
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
 
   server2:
-    build: .
-    command: "server"
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
     networks:
       - servers
     ports:
       - "8081:8080"
+    environment:
+      - SERVER_NAME=server2
+      - DB_SERVICE_URL=http://db:8080
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
 
   server3:
-    build: .
-    command: "server"
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server
     networks:
       - servers
     ports:
       - "8082:8080"
+    environment:
+      - SERVER_NAME=server3
+      - DB_SERVICE_URL=http://db:8080
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+
+  stats:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: stats
+    networks:
+      - servers
+    # ports:
+    #   - "8092:8080"

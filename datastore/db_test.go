@@ -14,13 +14,11 @@ func TestDb(t *testing.T) {
 
 	t.Run("Put, Get and Persistence", func(t *testing.T) {
 		tmpDir := filepath.Join(baseTmpDir, "put_get_persistence")
-		db, err := Open(tmpDir, 1024)
+
+		db1, err := Open(tmpDir, 1024)
 		if err != nil {
-			t.Fatalf("failed to open db: %v", err)
+			t.Fatalf("failed to open db1: %v", err)
 		}
-		t.Cleanup(func() {
-			_ = db.Close()
-		})
 
 		pairs := [][]string{
 			{"k1", "v1"},
@@ -31,10 +29,10 @@ func TestDb(t *testing.T) {
 
 		for _, pair := range pairs {
 			key, value := pair[0], pair[1]
-			if err := db.Put(key, value); err != nil {
+			if err := db1.Put(key, value); err != nil {
 				t.Fatalf("Put failed for key=%s: %v", key, err)
 			}
-			got, err := db.Get(key)
+			got, err := db1.Get(key)
 			if err != nil {
 				t.Fatalf("Get failed for key=%s: %v", key, err)
 			}
@@ -43,14 +41,14 @@ func TestDb(t *testing.T) {
 			}
 		}
 
-		initialSize, err := db.Size()
+		initialSize, err := db1.Size()
 		if err != nil {
 			t.Fatalf("Size() failed: %v", err)
 		}
-		if err := db.Put("k4", "v4"); err != nil {
+		if err := db1.Put("k4", "v4"); err != nil {
 			t.Fatalf("Put failed: %v", err)
 		}
-		newSize, err := db.Size()
+		newSize, err := db1.Size()
 		if err != nil {
 			t.Fatalf("Size() failed: %v", err)
 		}
@@ -58,16 +56,16 @@ func TestDb(t *testing.T) {
 			t.Errorf("expected size to grow: before=%d, after=%d", initialSize, newSize)
 		}
 
-		if err := db.Close(); err != nil {
-			t.Fatalf("failed to close db: %v", err)
+		if err := db1.Close(); err != nil {
+			t.Fatalf("failed to close db1: %v", err)
 		}
 
-		db, err = Open(tmpDir, 1024)
+		db2, err := Open(tmpDir, 1024)
 		if err != nil {
 			t.Fatalf("failed to reopen db: %v", err)
 		}
 		t.Cleanup(func() {
-			_ = db.Close()
+			_ = db2.Close()
 		})
 
 		expected := map[string]string{
@@ -77,7 +75,7 @@ func TestDb(t *testing.T) {
 			"k4": "v4",
 		}
 		for key, want := range expected {
-			got, err := db.Get(key)
+			got, err := db2.Get(key)
 			if err != nil {
 				t.Errorf("Get failed after reopen for key=%s: %v", key, err)
 				continue
@@ -154,9 +152,6 @@ func TestDb(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to open db: %v", err)
 		}
-		t.Cleanup(func() {
-			_ = db.Close()
-		})
 
 		keysToPut := []struct{ key, value string }{
 			{"k1", "v1"}, {"k2", "v2"},
@@ -231,6 +226,7 @@ func TestDb(t *testing.T) {
 		if err := db.Close(); err != nil {
 			t.Fatalf("failed to close after compaction: %v", err)
 		}
+
 		dbReopened, err := Open(tmpDir, 20)
 		if err != nil {
 			t.Fatalf("failed to reopen after compaction: %v", err)

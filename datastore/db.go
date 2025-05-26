@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,24 @@ type SegmentPos struct {
 	offset     int64
 }
 
+type putRequest struct {
+	key    string
+	value  string
+	respCh chan error
+}
+
+type getRequest struct {
+	key      string
+	offset   int64
+	filePath string
+	respCh   chan getResponse
+}
+
+type getResponse struct {
+	value string
+	err   error
+}
+
 type Db struct {
 	mu             sync.Mutex
 	dir            string
@@ -43,6 +62,13 @@ type Db struct {
 	compactionWg sync.WaitGroup
 	compactionMu sync.Mutex
 	isCompacting bool
+
+	putRequests chan putRequest
+	writerWg    sync.WaitGroup
+
+	getRequests   chan getRequest
+	getWorkersWg  sync.WaitGroup
+	numGetWorkers int
 }
 
 func Open(dir string, maxSegmentSize int64) (*Db, error) {
@@ -72,6 +98,9 @@ func Open(dir string, maxSegmentSize int64) (*Db, error) {
 		segments:       make([]*Segment, 0),
 		index:          make(map[string]SegmentPos),
 		maxSegmentSize: maxSegmentSize,
+		putRequests:    make(chan putRequest, 100),
+		numGetWorkers:  runtime.NumCPU() * 2,
+		getRequests:    make(chan getRequest),
 	}
 
 	for _, segFile := range segmentFiles {
@@ -96,6 +125,14 @@ func Open(dir string, maxSegmentSize int64) (*Db, error) {
 			db.Close()
 			return nil, err
 		}
+	}
+
+	db.writerWg.Add(1)
+	go db.writerGoroutine()
+
+	for i := 0; i < db.numGetWorkers; i++ {
+		db.getWorkersWg.Add(1)
+		go db.getWorker()
 	}
 
 	return db, nil
@@ -176,10 +213,17 @@ func (db *Db) recoverSegment(seg *Segment) error {
 	return nil
 }
 
-func (db *Db) Put(key, value string) error {
-	db.mu.Lock()
-	defer db.mu.Unlock()
+func (db *Db) writerGoroutine() {
+	defer db.writerWg.Done()
+	for req := range db.putRequests {
+		db.mu.Lock()
+		err := db.performPut(req.key, req.value)
+		db.mu.Unlock()
+		req.respCh <- err
+	}
+}
 
+func (db *Db) performPut(key, value string) error {
 	activeSeg := db.getActiveSegment()
 	if activeSeg.offset >= db.maxSegmentSize {
 		newSeg, err := createNewSegment(db.dir, activeSeg.num+1)
@@ -203,38 +247,78 @@ func (db *Db) Put(key, value string) error {
 	return nil
 }
 
-func (db *Db) Get(key string) (string, error) {
-	db.mu.Lock()
-	defer db.mu.Unlock()
-
-	pos, ok := db.index[key]
-	if !ok {
-		return "", ErrNotFound
+func (db *Db) Put(key, value string) error {
+	req := putRequest{
+		key:    key,
+		value:  value,
+		respCh: make(chan error, 1),
 	}
 
-	seg := db.findSegment(pos.segmentNum)
-	if seg == nil {
-		return "", fmt.Errorf("segment %d for key %s not found in active segments", pos.segmentNum, key)
-	}
+	db.putRequests <- req
 
-	file, err := os.Open(seg.file.Name())
+	return <-req.respCh
+}
+
+func (db *Db) getWorker() {
+	defer db.getWorkersWg.Done()
+	for req := range db.getRequests {
+		value, err := db.readRecordFromFile(req.key, req.offset, req.filePath)
+		req.respCh <- getResponse{value: value, err: err}
+	}
+}
+
+func (db *Db) readRecordFromFile(key string, offset int64, filePath string) (string, error) {
+	file, err := os.Open(filePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to open segment file %s for key %s: %w", seg.file.Name(), key, err)
+		return "", fmt.Errorf("failed to open segment file %s for key %s: %w", filePath, key, err)
 	}
 	defer file.Close()
 
-	_, err = file.Seek(pos.offset, io.SeekStart)
+	_, err = file.Seek(offset, io.SeekStart)
 	if err != nil {
-		return "", fmt.Errorf("failed to seek to offset %d in segment %s for key %s: %w", pos.offset, seg.file.Name(), key, err)
+		return "", fmt.Errorf("failed to seek to offset %d in segment %s for key %s: %w", offset, filePath, key, err)
 	}
 
 	var record entry
 	_, err = record.DecodeFromReader(bufio.NewReader(file))
 	if err != nil {
-		return "", fmt.Errorf("failed to decode record at offset %d in segment %s for key %s: %w", pos.offset, seg.file.Name(), key, err)
+		return "", fmt.Errorf("failed to decode record at offset %d in segment %s for key %s: %w", offset, filePath, key, err)
+	}
+
+	if record.key != key {
+		return "", fmt.Errorf("key mismatch: expected %s, got %s at offset %d in segment %s", key, record.key, offset, filePath)
 	}
 
 	return record.value, nil
+}
+
+func (db *Db) Get(key string) (string, error) {
+	db.mu.Lock()
+	pos, ok := db.index[key]
+	if !ok {
+		db.mu.Unlock()
+		return "", ErrNotFound
+	}
+
+	seg := db.findSegment(pos.segmentNum)
+	if seg == nil {
+		db.mu.Unlock()
+		return "", fmt.Errorf("segment %d for key %s not found in active segments during lookup", pos.segmentNum, key)
+	}
+	filePath := seg.file.Name()
+	db.mu.Unlock()
+
+	req := getRequest{
+		key:      key,
+		offset:   pos.offset,
+		filePath: filePath,
+		respCh:   make(chan getResponse, 1),
+	}
+
+	db.getRequests <- req
+
+	resp := <-req.respCh
+	return resp.value, resp.err
 }
 
 func (db *Db) getActiveSegment() *Segment {
@@ -296,11 +380,10 @@ func (db *Db) performCompaction() error {
 	}
 
 	mergedKeys := make(map[string]entry)
-	segmentsToCompact := make([]*Segment, len(db.segments)-1)
-	copy(segmentsToCompact, db.segments[:len(db.segments)-1])
+	segmentsToCompact := db.segments[:len(db.segments)-1]
 
 	for _, seg := range segmentsToCompact {
-		if err := processSegmentForCompaction(seg, mergedKeys, db.index); err != nil {
+		if err := processSegmentForCompaction(seg, mergedKeys); err != nil {
 			mergeFile.Close()
 			os.Remove(mergePath)
 			return err
@@ -318,35 +401,25 @@ func (db *Db) performCompaction() error {
 		return fmt.Errorf("failed to close merge file %s: %w", mergePath, err)
 	}
 
-	for _, seg := range segmentsToCompact {
-		if err := seg.file.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error closing old segment file %s: %v\n", seg.file.Name(), err)
-		}
-		if err := os.Remove(seg.file.Name()); err != nil {
-			fmt.Fprintf(os.Stderr, "Error removing old segment file %s: %v\n", seg.file.Name(), err)
-		}
-	}
-
 	newSegmentOnePath := filepath.Join(db.dir, fmt.Sprintf("%s%04d", segmentPrefix, 1))
 	if err := os.Rename(mergePath, newSegmentOnePath); err != nil {
 		fmt.Fprintf(os.Stderr, "Error renaming %s to %s: %v\n", mergePath, newSegmentOnePath, err)
 		return err
 	}
 
-	activeSeg := db.getActiveSegment()
-	if activeSeg != nil {
-		if err := activeSeg.file.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error closing active segment file %s during compaction setup: %v\n", activeSeg.file.Name(), err)
-		}
-		oldActiveSegPath := activeSeg.file.Name()
-		newActiveSegNum := 2
-		newActiveSegPath := filepath.Join(db.dir, fmt.Sprintf("%s%04d", segmentPrefix, newActiveSegNum))
+	currentActiveSeg := db.segments[len(db.segments)-1]
+	if err := currentActiveSeg.file.Close(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error closing current active segment file %s during compaction: %v\n", currentActiveSeg.file.Name(), err)
+	}
 
-		if oldActiveSegPath != newActiveSegPath {
-			if err := os.Rename(oldActiveSegPath, newActiveSegPath); err != nil {
-				fmt.Fprintf(os.Stderr, "Error renaming active segment %s to %s: %v\n", oldActiveSegPath, newActiveSegPath, err)
-				return err
-			}
+	oldActiveSegPath := currentActiveSeg.file.Name()
+	newActiveSegNum := 2
+	newActiveSegPath := filepath.Join(db.dir, fmt.Sprintf("%s%04d", segmentPrefix, newActiveSegNum))
+
+	if oldActiveSegPath != newActiveSegPath {
+		if err := os.Rename(oldActiveSegPath, newActiveSegPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error renaming active segment %s to %s: %v\n", oldActiveSegPath, newActiveSegPath, err)
+			return err
 		}
 	}
 
@@ -392,7 +465,7 @@ func (db *Db) performCompaction() error {
 	return nil
 }
 
-func processSegmentForCompaction(seg *Segment, mergedKeys map[string]entry, index map[string]SegmentPos) error {
+func processSegmentForCompaction(seg *Segment, mergedKeys map[string]entry) error {
 	file, err := os.Open(seg.file.Name())
 	if err != nil {
 		return err
@@ -409,7 +482,6 @@ func processSegmentForCompaction(seg *Segment, mergedKeys map[string]entry, inde
 		if err != nil {
 			return err
 		}
-
 		mergedKeys[record.key] = record
 	}
 	return nil
@@ -419,7 +491,14 @@ func writeMergedData(file *os.File, data map[string]entry) error {
 	writer := bufio.NewWriter(file)
 	defer writer.Flush()
 
-	for _, record := range data {
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, k := range keys {
+		record := data[k]
 		if _, err := writer.Write(record.Encode()); err != nil {
 			return err
 		}
@@ -428,6 +507,12 @@ func writeMergedData(file *os.File, data map[string]entry) error {
 }
 
 func (db *Db) Close() error {
+	close(db.putRequests)
+	db.writerWg.Wait()
+
+	close(db.getRequests)
+	db.getWorkersWg.Wait()
+
 	db.compactionWg.Wait()
 
 	db.mu.Lock()
