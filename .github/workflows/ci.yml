@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "lab5" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "lab5" ]
 
 jobs:
   integration-tests:
@@ -23,4 +23,4 @@ jobs:
 
     - name: Cleanup
       if: always()
-      run: docker compose -f docker-compose.test.yaml down
+      run: docker compose -f docker-compose.test.yaml down -v
